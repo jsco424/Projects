@@ -1,0 +1,317 @@
+-- =============================================================
+--  SCRIPT 04 — FINANCE & REVENUE OPS: COHORT & RETENTION
+--  Domain:  Finance & Revenue Operations
+--  Type:    Cohort & Retention Analysis
+--  Dialect: Standard SQL (portable)
+--
+--  Analyses covered:
+--    • ARR cohort waterfall (new, expansion, contraction, churn)
+--    • Net Revenue Retention (NRR) by cohort
+--    • Gross Revenue Retention (GRR) by cohort
+--    • Customer Lifetime Value (CLV) by cohort & segment
+--    • Payback period by acquisition channel
+-- =============================================================
+
+
+WITH
+
+-- ------------------------------------------------------------
+--  BASE: Customer ARR snapshots per quarter
+-- ------------------------------------------------------------
+arr_snapshots AS (
+    SELECT * FROM (VALUES
+        -- (customer_id, segment, acq_channel, quarter, arr)
+        ('C001', 'Enterprise', 'paid_search',  '2023-Q1', 120000),
+        ('C001', 'Enterprise', 'paid_search',  '2023-Q2', 120000),
+        ('C001', 'Enterprise', 'paid_search',  '2023-Q3', 144000),  -- expansion
+        ('C001', 'Enterprise', 'paid_search',  '2023-Q4', 144000),
+        ('C001', 'Enterprise', 'paid_search',  '2024-Q1', 144000),
+        ('C001', 'Enterprise', 'paid_search',  '2024-Q2', 168000),  -- expansion
+        ('C002', 'Mid-Market', 'referral',     '2023-Q1',  48000),
+        ('C002', 'Mid-Market', 'referral',     '2023-Q2',  48000),
+        ('C002', 'Mid-Market', 'referral',     '2023-Q3',  36000),  -- contraction
+        ('C002', 'Mid-Market', 'referral',     '2023-Q4',     0),   -- churned
+        ('C003', 'Enterprise', 'organic',      '2023-Q2', 240000),
+        ('C003', 'Enterprise', 'organic',      '2023-Q3', 240000),
+        ('C003', 'Enterprise', 'organic',      '2023-Q4', 288000),  -- expansion
+        ('C003', 'Enterprise', 'organic',      '2024-Q1', 288000),
+        ('C003', 'Enterprise', 'organic',      '2024-Q2', 312000),  -- expansion
+        ('C004', 'SMB',        'paid_social',  '2023-Q2',  18000),
+        ('C004', 'SMB',        'paid_social',  '2023-Q3',  18000),
+        ('C004', 'SMB',        'paid_social',  '2023-Q4',     0),   -- churned
+        ('C005', 'Enterprise', 'paid_search',  '2023-Q3', 180000),
+        ('C005', 'Enterprise', 'paid_search',  '2023-Q4', 180000),
+        ('C005', 'Enterprise', 'paid_search',  '2024-Q1', 204000),  -- expansion
+        ('C005', 'Enterprise', 'paid_search',  '2024-Q2', 204000),
+        ('C006', 'Mid-Market', 'organic',      '2023-Q3',  60000),
+        ('C006', 'Mid-Market', 'organic',      '2023-Q4',  60000),
+        ('C006', 'Mid-Market', 'organic',      '2024-Q1',  54000),  -- contraction
+        ('C006', 'Mid-Market', 'organic',      '2024-Q2',  54000),
+        ('C007', 'SMB',        'referral',     '2023-Q4',  24000),
+        ('C007', 'SMB',        'referral',     '2024-Q1',  24000),
+        ('C007', 'SMB',        'referral',     '2024-Q2',  28800),  -- expansion
+        ('C008', 'Enterprise', 'paid_social',  '2024-Q1', 300000),
+        ('C008', 'Enterprise', 'paid_social',  '2024-Q2', 300000)
+    ) AS t(customer_id, segment, acq_channel, quarter, arr)
+),
+
+-- ------------------------------------------------------------
+--  BASE: Acquisition cost per customer
+-- ------------------------------------------------------------
+acquisition_costs AS (
+    SELECT * FROM (VALUES
+        ('C001', 'paid_search', 12000),
+        ('C002', 'referral',     2500),
+        ('C003', 'organic',      1800),
+        ('C004', 'paid_social',  4200),
+        ('C005', 'paid_search', 15000),
+        ('C006', 'organic',      2100),
+        ('C007', 'referral',     2800),
+        ('C008', 'paid_social', 18000)
+    ) AS t(customer_id, acq_channel, cac)
+),
+
+
+-- =============================================================
+--  STEP 1 — IDENTIFY FIRST ARR QUARTER (COHORT) PER CUSTOMER
+-- =============================================================
+customer_cohorts AS (
+    SELECT
+        customer_id,
+        segment,
+        acq_channel,
+        MIN(quarter)                                                AS cohort_quarter
+    FROM arr_snapshots
+    WHERE arr > 0
+    GROUP BY customer_id, segment, acq_channel
+),
+
+
+-- =============================================================
+--  STEP 2 — ARR WATERFALL COMPONENTS (quarter-over-quarter)
+--  For each customer, classify the ARR change vs prior quarter
+-- =============================================================
+arr_with_prior AS (
+    SELECT
+        s.customer_id,
+        s.segment,
+        s.acq_channel,
+        s.quarter,
+        s.arr                                                       AS current_arr,
+        LAG(s.arr) OVER (
+            PARTITION BY s.customer_id ORDER BY s.quarter
+        )                                                           AS prior_arr,
+        cc.cohort_quarter
+    FROM arr_snapshots s
+    JOIN customer_cohorts cc ON s.customer_id = cc.customer_id
+),
+
+arr_movements AS (
+    SELECT
+        customer_id,
+        segment,
+        acq_channel,
+        quarter,
+        cohort_quarter,
+        current_arr,
+        prior_arr,
+        CASE
+            WHEN prior_arr IS NULL AND current_arr > 0
+                THEN current_arr                                    -- New ARR
+            ELSE 0
+        END                                                         AS new_arr,
+        CASE
+            WHEN prior_arr > 0 AND current_arr > prior_arr
+                THEN current_arr - prior_arr                        -- Expansion
+            ELSE 0
+        END                                                         AS expansion_arr,
+        CASE
+            WHEN prior_arr > 0 AND current_arr > 0
+              AND current_arr < prior_arr
+                THEN current_arr - prior_arr                        -- Contraction (negative)
+            ELSE 0
+        END                                                         AS contraction_arr,
+        CASE
+            WHEN prior_arr > 0 AND current_arr = 0
+                THEN -prior_arr                                     -- Churn (negative)
+            ELSE 0
+        END                                                         AS churned_arr
+    FROM arr_with_prior
+),
+
+
+-- =============================================================
+--  STEP 3 — ARR WATERFALL SUMMARY BY QUARTER
+-- =============================================================
+arr_waterfall AS (
+    SELECT
+        quarter,
+        SUM(new_arr)                                                AS new_arr,
+        SUM(expansion_arr)                                          AS expansion_arr,
+        SUM(contraction_arr)                                        AS contraction_arr,
+        SUM(churned_arr)                                            AS churned_arr,
+        SUM(new_arr) + SUM(expansion_arr)
+            + SUM(contraction_arr) + SUM(churned_arr)              AS net_new_arr,
+        SUM(CASE WHEN current_arr > 0 THEN current_arr ELSE 0 END) AS ending_arr
+    FROM arr_movements
+    GROUP BY quarter
+    ORDER BY quarter
+),
+
+
+-- =============================================================
+--  STEP 4 — NET REVENUE RETENTION (NRR) BY COHORT
+--  NRR = (Starting ARR + Expansion + Contraction - Churn)
+--        / Starting ARR
+--  Measured at a fixed point: compare cohort's ARR
+--  at start vs. 1 year later
+-- =============================================================
+cohort_arr_start AS (
+    SELECT
+        cc.cohort_quarter,
+        SUM(s.arr)                                                  AS starting_arr,
+        COUNT(DISTINCT cc.customer_id)                              AS customers_at_start
+    FROM customer_cohorts cc
+    JOIN arr_snapshots s
+        ON cc.customer_id = s.customer_id
+       AND s.quarter = cc.cohort_quarter
+    GROUP BY cc.cohort_quarter
+),
+
+-- ARR from those same customers one year later (4 quarters)
+cohort_arr_later AS (
+    SELECT
+        cc.cohort_quarter,
+        SUM(s.arr)                                                  AS later_arr,
+        COUNT(DISTINCT CASE WHEN s.arr > 0 THEN s.customer_id END) AS retained_customers
+    FROM customer_cohorts cc
+    JOIN arr_snapshots s
+        ON cc.customer_id = s.customer_id
+    WHERE s.quarter = (
+        -- Quarter that is 3 quarters after cohort start (approx 1 yr in this dataset)
+        SELECT MIN(quarter) FROM arr_snapshots s2
+        WHERE s2.customer_id = cc.customer_id
+          AND s2.quarter > cc.cohort_quarter
+    )
+    GROUP BY cc.cohort_quarter
+),
+
+nrr_grr AS (
+    SELECT
+        cas.cohort_quarter,
+        cas.customers_at_start,
+        cas.starting_arr,
+        COALESCE(cal.later_arr, 0)                                  AS later_arr,
+        COALESCE(cal.retained_customers, 0)                         AS retained_customers,
+        -- NRR includes expansion/contraction; can exceed 100%
+        ROUND(
+            COALESCE(cal.later_arr, 0)::NUMERIC
+            / NULLIF(cas.starting_arr, 0) * 100, 1
+        )                                                           AS nrr_pct,
+        -- GRR excludes expansion; capped at 100%
+        ROUND(
+            LEAST(COALESCE(cal.later_arr, 0), cas.starting_arr)::NUMERIC
+            / NULLIF(cas.starting_arr, 0) * 100, 1
+        )                                                           AS grr_pct,
+        ROUND(
+            COALESCE(cal.retained_customers, 0)::NUMERIC
+            / cas.customers_at_start * 100, 1
+        )                                                           AS logo_retention_pct
+    FROM cohort_arr_start cas
+    LEFT JOIN cohort_arr_later cal
+        ON cas.cohort_quarter = cal.cohort_quarter
+),
+
+
+-- =============================================================
+--  STEP 5 — CUSTOMER LIFETIME VALUE (CLV) BY SEGMENT
+--  CLV = (Avg ARR / Churn Rate) - CAC
+--  Simplified: CLV = avg ARR × avg customer lifespan (quarters)
+-- =============================================================
+customer_lifespan AS (
+    SELECT
+        cc.customer_id,
+        cc.segment,
+        cc.acq_channel,
+        COUNT(DISTINCT s.quarter)                                   AS active_quarters,
+        MAX(s.arr)                                                  AS peak_arr,
+        AVG(CASE WHEN s.arr > 0 THEN s.arr END)                    AS avg_arr_while_active
+    FROM customer_cohorts cc
+    JOIN arr_snapshots s ON cc.customer_id = s.customer_id
+    WHERE s.arr > 0
+    GROUP BY cc.customer_id, cc.segment, cc.acq_channel
+),
+
+clv_by_segment AS (
+    SELECT
+        cl.segment,
+        COUNT(DISTINCT cl.customer_id)                              AS customers,
+        ROUND(AVG(cl.active_quarters), 1)                          AS avg_lifespan_quarters,
+        ROUND(AVG(cl.avg_arr_while_active), 0)                     AS avg_arr,
+        -- Simplified CLV: avg ARR × avg lifespan in years
+        ROUND(
+            AVG(cl.avg_arr_while_active)
+            * (AVG(cl.active_quarters) / 4.0), 0
+        )                                                           AS estimated_clv,
+        ROUND(AVG(ac.cac), 0)                                      AS avg_cac,
+        ROUND(
+            AVG(cl.avg_arr_while_active)
+            * (AVG(cl.active_quarters) / 4.0)
+            / NULLIF(AVG(ac.cac), 0), 1
+        )                                                           AS clv_to_cac_ratio
+    FROM customer_lifespan cl
+    LEFT JOIN acquisition_costs ac ON cl.customer_id = ac.customer_id
+    GROUP BY cl.segment
+),
+
+
+-- =============================================================
+--  STEP 6 — PAYBACK PERIOD BY ACQUISITION CHANNEL
+--  Payback period = CAC / (Avg MRR × Gross Margin)
+--  Assume 75% gross margin for SaaS
+-- =============================================================
+payback_by_channel AS (
+    SELECT
+        ac.acq_channel,
+        COUNT(DISTINCT ac.customer_id)                              AS customers,
+        ROUND(AVG(ac.cac), 0)                                      AS avg_cac,
+        ROUND(AVG(cl.avg_arr_while_active) / 12, 0)                AS avg_mrr,
+        -- Payback months = CAC / (MRR × 0.75)
+        ROUND(
+            AVG(ac.cac)
+            / NULLIF(AVG(cl.avg_arr_while_active) / 12 * 0.75, 0), 1
+        )                                                           AS payback_months,
+        CASE
+            WHEN ROUND(
+                     AVG(ac.cac)
+                     / NULLIF(AVG(cl.avg_arr_while_active) / 12 * 0.75, 0), 1
+                 ) <= 12 THEN '✅ Healthy (<12 mo)'
+            WHEN ROUND(
+                     AVG(ac.cac)
+                     / NULLIF(AVG(cl.avg_arr_while_active) / 12 * 0.75, 0), 1
+                 ) <= 18 THEN '⚠️  Acceptable (12-18 mo)'
+            ELSE '🔴 Too Long (>18 mo)'
+        END                                                         AS payback_status
+    FROM acquisition_costs ac
+    JOIN customer_lifespan cl ON ac.customer_id = cl.customer_id
+    GROUP BY ac.acq_channel
+)
+
+
+-- =============================================================
+--  FINAL OUTPUTS
+-- =============================================================
+
+-- ARR Waterfall
+SELECT 'ARR Waterfall' AS report, quarter, new_arr, expansion_arr,
+       contraction_arr, churned_arr, net_new_arr, ending_arr
+FROM arr_waterfall;
+
+-- Run standalone for NRR / GRR:
+-- SELECT * FROM nrr_grr ORDER BY cohort_quarter;
+
+-- Run standalone for CLV by Segment:
+-- SELECT * FROM clv_by_segment ORDER BY estimated_clv DESC;
+
+-- Run standalone for Payback Period by Channel:
+-- SELECT * FROM payback_by_channel ORDER BY payback_months;
