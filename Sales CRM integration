@@ -1,0 +1,210 @@
+-- =============================================================
+--  SCRIPT 01 — SALES & CRM KPI AGGREGATIONS
+--  Domain:  Sales / CRM
+--  Type:    Aggregations & KPIs
+--  Dialect: Standard SQL (portable)
+--
+--  KPIs covered:
+--    • Total & average ARR / MRR
+--    • Win rate & average sales cycle (days)
+--    • Pipeline coverage ratio
+--    • Revenue by rep, segment, and region
+--    • Quota attainment per rep
+-- =============================================================
+
+
+WITH
+
+-- ------------------------------------------------------------
+--  BASE: Opportunities / Deals
+-- ------------------------------------------------------------
+opportunities AS (
+    SELECT * FROM (VALUES
+        -- (opp_id, rep_id, account_id, segment, region, stage,
+        --  amount, created_date, close_date, closed_won)
+        (1,  'R01', 'A101', 'Enterprise', 'Northeast', 'Closed Won',  85000, '2024-01-05'::DATE, '2024-03-18'::DATE, TRUE),
+        (2,  'R02', 'A102', 'Mid-Market', 'Southeast', 'Closed Won',  32000, '2024-01-12'::DATE, '2024-03-25'::DATE, TRUE),
+        (3,  'R01', 'A103', 'SMB',        'Midwest',   'Closed Lost', 12000, '2024-02-01'::DATE, '2024-03-10'::DATE, FALSE),
+        (4,  'R03', 'A104', 'Enterprise', 'West',      'Closed Won', 210000, '2024-01-20'::DATE, '2024-04-05'::DATE, TRUE),
+        (5,  'R02', 'A105', 'Mid-Market', 'Northeast', 'Closed Lost', 45000, '2024-02-14'::DATE, '2024-04-20'::DATE, FALSE),
+        (6,  'R03', 'A106', 'Enterprise', 'West',      'Closed Won', 175000, '2024-02-08'::DATE, '2024-05-01'::DATE, TRUE),
+        (7,  'R01', 'A107', 'SMB',        'Southeast', 'Closed Won',  18000, '2024-03-01'::DATE, '2024-04-15'::DATE, TRUE),
+        (8,  'R04', 'A108', 'Enterprise', 'Midwest',   'Closed Won', 320000, '2024-01-15'::DATE, '2024-05-20'::DATE, TRUE),
+        (9,  'R04', 'A109', 'Mid-Market', 'West',      'Closed Lost', 55000, '2024-02-20'::DATE, '2024-04-30'::DATE, FALSE),
+        (10, 'R02', 'A110', 'SMB',        'Northeast', 'Closed Won',  22000, '2024-03-10'::DATE, '2024-05-05'::DATE, TRUE),
+        (11, 'R05', 'A111', 'Enterprise', 'Southeast', 'Closed Won', 145000, '2024-02-01'::DATE, '2024-05-15'::DATE, TRUE),
+        (12, 'R05', 'A112', 'Mid-Market', 'Midwest',   'Closed Lost', 38000, '2024-03-05'::DATE, '2024-05-25'::DATE, FALSE),
+        (13, 'R03', 'A113', 'SMB',        'West',      'Closed Won',  15000, '2024-04-01'::DATE, '2024-05-30'::DATE, TRUE),
+        (14, 'R01', 'A114', 'Enterprise', 'Northeast', 'Closed Won', 195000, '2024-03-15'::DATE, '2024-06-10'::DATE, TRUE),
+        (15, 'R04', 'A115', 'Mid-Market', 'Southeast', 'Closed Won',  62000, '2024-04-10'::DATE, '2024-06-20'::DATE, TRUE)
+    ) AS t(opp_id, rep_id, account_id, segment, region, stage,
+           amount, created_date, close_date, closed_won)
+),
+
+-- ------------------------------------------------------------
+--  BASE: Sales Rep Quotas
+-- ------------------------------------------------------------
+rep_quotas AS (
+    SELECT * FROM (VALUES
+        ('R01', 'Alice Monroe',   350000),
+        ('R02', 'Brian Cho',      280000),
+        ('R03', 'Carmen Reyes',   400000),
+        ('R04', 'David Park',     500000),
+        ('R05', 'Elena Vasquez',  300000)
+    ) AS t(rep_id, rep_name, annual_quota)
+),
+
+-- ------------------------------------------------------------
+--  BASE: Open Pipeline (not yet closed)
+-- ------------------------------------------------------------
+open_pipeline AS (
+    SELECT * FROM (VALUES
+        ('R01', 'Enterprise', 280000),
+        ('R02', 'Mid-Market', 150000),
+        ('R03', 'Enterprise', 420000),
+        ('R04', 'Enterprise', 380000),
+        ('R05', 'Mid-Market', 190000)
+    ) AS t(rep_id, segment, pipeline_value)
+),
+
+
+-- =============================================================
+--  KPI 1 — OVERALL REVENUE SUMMARY
+-- =============================================================
+overall_summary AS (
+    SELECT
+        COUNT(*)                                                    AS total_opportunities,
+        SUM(CASE WHEN closed_won THEN 1 ELSE 0 END)                AS deals_won,
+        SUM(CASE WHEN NOT closed_won THEN 1 ELSE 0 END)            AS deals_lost,
+        ROUND(
+            SUM(CASE WHEN closed_won THEN 1 ELSE 0 END)::NUMERIC
+            / COUNT(*) * 100, 1
+        )                                                           AS win_rate_pct,
+        SUM(CASE WHEN closed_won THEN amount ELSE 0 END)           AS total_revenue_won,
+        ROUND(AVG(CASE WHEN closed_won THEN amount END), 0)        AS avg_deal_size,
+        ROUND(AVG(
+            CASE WHEN closed_won
+                 THEN close_date - created_date
+            END
+        ), 1)                                                       AS avg_sales_cycle_days
+    FROM opportunities
+),
+
+
+-- =============================================================
+--  KPI 2 — REVENUE & WIN RATE BY SEGMENT
+-- =============================================================
+segment_kpis AS (
+    SELECT
+        segment,
+        COUNT(*)                                                    AS total_deals,
+        SUM(CASE WHEN closed_won THEN 1 ELSE 0 END)                AS won,
+        ROUND(
+            SUM(CASE WHEN closed_won THEN 1 ELSE 0 END)::NUMERIC
+            / COUNT(*) * 100, 1
+        )                                                           AS win_rate_pct,
+        SUM(CASE WHEN closed_won THEN amount ELSE 0 END)           AS revenue,
+        ROUND(AVG(CASE WHEN closed_won THEN amount END), 0)        AS avg_deal_size,
+        RANK() OVER (
+            ORDER BY SUM(CASE WHEN closed_won THEN amount ELSE 0 END) DESC
+        )                                                           AS revenue_rank
+    FROM opportunities
+    GROUP BY segment
+),
+
+
+-- =============================================================
+--  KPI 3 — REVENUE BY REGION
+-- =============================================================
+region_kpis AS (
+    SELECT
+        region,
+        SUM(CASE WHEN closed_won THEN amount ELSE 0 END)           AS revenue_won,
+        COUNT(CASE WHEN closed_won THEN 1 END)                     AS deals_won,
+        ROUND(AVG(CASE WHEN closed_won THEN amount END), 0)        AS avg_deal_size,
+        RANK() OVER (
+            ORDER BY SUM(CASE WHEN closed_won THEN amount ELSE 0 END) DESC
+        )                                                           AS region_rank
+    FROM opportunities
+    GROUP BY region
+),
+
+
+-- =============================================================
+--  KPI 4 — REP PERFORMANCE & QUOTA ATTAINMENT
+-- =============================================================
+rep_performance AS (
+    SELECT
+        rq.rep_id,
+        rq.rep_name,
+        rq.annual_quota,
+        SUM(CASE WHEN o.closed_won THEN o.amount ELSE 0 END)       AS revenue_closed,
+        COUNT(CASE WHEN o.closed_won THEN 1 END)                   AS deals_won,
+        ROUND(
+            SUM(CASE WHEN o.closed_won THEN 1 ELSE 0 END)::NUMERIC
+            / COUNT(*) * 100, 1
+        )                                                           AS win_rate_pct,
+        ROUND(
+            SUM(CASE WHEN o.closed_won THEN o.amount ELSE 0 END)::NUMERIC
+            / rq.annual_quota * 100, 1
+        )                                                           AS quota_attainment_pct,
+        RANK() OVER (
+            ORDER BY SUM(CASE WHEN o.closed_won THEN o.amount ELSE 0 END) DESC
+        )                                                           AS revenue_rank
+    FROM rep_quotas rq
+    LEFT JOIN opportunities o ON rq.rep_id = o.rep_id
+    GROUP BY rq.rep_id, rq.rep_name, rq.annual_quota
+),
+
+
+-- =============================================================
+--  KPI 5 — PIPELINE COVERAGE RATIO
+--  Coverage = Open Pipeline / Remaining Quota needed
+--  Healthy coverage is typically 3x–4x
+-- =============================================================
+pipeline_coverage AS (
+    SELECT
+        rp.rep_id,
+        rp.rep_name,
+        rp.annual_quota,
+        rp.revenue_closed,
+        GREATEST(rp.annual_quota - rp.revenue_closed, 0)           AS quota_remaining,
+        COALESCE(op.pipeline_value, 0)                             AS open_pipeline,
+        ROUND(
+            COALESCE(op.pipeline_value, 0)::NUMERIC
+            / NULLIF(GREATEST(rp.annual_quota - rp.revenue_closed, 0), 0), 2
+        )                                                           AS pipeline_coverage_ratio,
+        CASE
+            WHEN COALESCE(op.pipeline_value, 0)::NUMERIC
+                 / NULLIF(GREATEST(rp.annual_quota - rp.revenue_closed, 0), 0) >= 4
+                THEN '✅ Healthy'
+            WHEN COALESCE(op.pipeline_value, 0)::NUMERIC
+                 / NULLIF(GREATEST(rp.annual_quota - rp.revenue_closed, 0), 0) >= 2.5
+                THEN '⚠️  At Risk'
+            ELSE '🔴 Under-Piped'
+        END                                                         AS coverage_status
+    FROM rep_performance rp
+    LEFT JOIN open_pipeline op ON rp.rep_id = op.rep_id
+)
+
+
+-- =============================================================
+--  FINAL OUTPUTS
+-- =============================================================
+
+-- 1. Overall Summary
+SELECT 'Overall Summary'          AS report, * FROM overall_summary
+
+UNION ALL SELECT 'Segment KPIs', segment::TEXT, total_deals::TEXT, won::TEXT,
+    win_rate_pct::TEXT, revenue::TEXT, avg_deal_size::TEXT, revenue_rank::TEXT
+FROM segment_kpis
+
+UNION ALL SELECT 'Region KPIs', region, revenue_won::TEXT, deals_won::TEXT,
+    avg_deal_size::TEXT, region_rank::TEXT, NULL, NULL
+FROM region_kpis;
+
+-- Run standalone for Rep Performance:
+-- SELECT * FROM rep_performance ORDER BY revenue_rank;
+
+-- Run standalone for Pipeline Coverage:
+-- SELECT * FROM pipeline_coverage ORDER BY rep_id;
