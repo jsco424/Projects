@@ -1,0 +1,239 @@
+-- =============================================================
+--  SCRIPT 02 — MARKETING & ATTRIBUTION KPI AGGREGATIONS
+--  Domain:  Marketing & Attribution
+--  Type:    Aggregations & KPIs
+--  Dialect: Standard SQL (portable)
+--
+--  KPIs covered:
+--    • Spend, impressions, clicks, CTR by channel
+--    • Cost per Lead (CPL), Cost per Opportunity (CPO),
+--      Cost per Acquisition (CPA)
+--    • Return on Ad Spend (ROAS)
+--    • Channel contribution to pipeline & revenue
+--    • First-touch vs last-touch attribution comparison
+-- =============================================================
+
+
+WITH
+
+-- ------------------------------------------------------------
+--  BASE: Channel spend & engagement by month
+-- ------------------------------------------------------------
+channel_spend AS (
+    SELECT * FROM (VALUES
+        -- (period, channel, spend, impressions, clicks, leads_generated)
+        ('2024-01'::DATE, 'Paid Search',  42000, 1200000, 36000, 480),
+        ('2024-01'::DATE, 'Paid Social',  28000,  980000, 19600, 310),
+        ('2024-01'::DATE, 'Display',      15000, 2500000, 12500, 120),
+        ('2024-01'::DATE, 'Email',         5000,       0, 48000, 620),
+        ('2024-01'::DATE, 'Organic SEO',      0,  800000, 22000, 290),
+        ('2024-02'::DATE, 'Paid Search',  45000, 1300000, 39000, 510),
+        ('2024-02'::DATE, 'Paid Social',  30000, 1050000, 21000, 340),
+        ('2024-02'::DATE, 'Display',      16000, 2700000, 13500, 135),
+        ('2024-02'::DATE, 'Email',         5000,       0, 50000, 640),
+        ('2024-02'::DATE, 'Organic SEO',      0,  850000, 23500, 310),
+        ('2024-03'::DATE, 'Paid Search',  50000, 1450000, 43500, 580),
+        ('2024-03'::DATE, 'Paid Social',  35000, 1200000, 24000, 400),
+        ('2024-03'::DATE, 'Display',      18000, 2900000, 14500, 155),
+        ('2024-03'::DATE, 'Email',         6000,       0, 55000, 710),
+        ('2024-03'::DATE, 'Organic SEO',      0,  920000, 25000, 335)
+    ) AS t(period, channel, spend, impressions, clicks, leads_generated)
+),
+
+-- ------------------------------------------------------------
+--  BASE: Pipeline & revenue attributed per channel per month
+-- ------------------------------------------------------------
+channel_attribution AS (
+    SELECT * FROM (VALUES
+        -- (period, channel, opportunities_created, pipeline_value,
+        --  closed_won_count, closed_won_revenue)
+        ('2024-01'::DATE, 'Paid Search', 62,  1550000, 18, 480000),
+        ('2024-01'::DATE, 'Paid Social', 38,   760000, 10, 230000),
+        ('2024-01'::DATE, 'Display',     14,   210000,  3,  65000),
+        ('2024-01'::DATE, 'Email',       95,  1140000, 28, 560000),
+        ('2024-01'::DATE, 'Organic SEO', 45,   900000, 14, 320000),
+        ('2024-02'::DATE, 'Paid Search', 68,  1700000, 20, 530000),
+        ('2024-02'::DATE, 'Paid Social', 42,   840000, 12, 260000),
+        ('2024-02'::DATE, 'Display',     16,   240000,  4,  72000),
+        ('2024-02'::DATE, 'Email',      102,  1224000, 31, 620000),
+        ('2024-02'::DATE, 'Organic SEO', 48,   960000, 15, 345000),
+        ('2024-03'::DATE, 'Paid Search', 78,  1950000, 23, 610000),
+        ('2024-03'::DATE, 'Paid Social', 50,  1000000, 14, 310000),
+        ('2024-03'::DATE, 'Display',     19,   285000,  5,  88000),
+        ('2024-03'::DATE, 'Email',      115,  1380000, 36, 720000),
+        ('2024-03'::DATE, 'Organic SEO', 52,  1040000, 17, 390000)
+    ) AS t(period, channel, opportunities_created, pipeline_value,
+           closed_won_count, closed_won_revenue)
+),
+
+-- ------------------------------------------------------------
+--  BASE: First-touch vs Last-touch revenue credit
+-- ------------------------------------------------------------
+attribution_comparison AS (
+    SELECT * FROM (VALUES
+        -- (channel, first_touch_revenue, last_touch_revenue)
+        ('Paid Search', 820000,  580000),
+        ('Paid Social',  410000,  280000),
+        ('Display',       95000,   60000),
+        ('Email',        630000,  980000),
+        ('Organic SEO',  545000,  480000)
+    ) AS t(channel, first_touch_revenue, last_touch_revenue)
+),
+
+
+-- =============================================================
+--  KPI 1 — CHANNEL EFFICIENCY (3-month aggregate)
+-- =============================================================
+channel_efficiency AS (
+    SELECT
+        cs.channel,
+        SUM(cs.spend)                                               AS total_spend,
+        SUM(cs.impressions)                                         AS total_impressions,
+        SUM(cs.clicks)                                              AS total_clicks,
+        SUM(cs.leads_generated)                                     AS total_leads,
+        -- CTR (clicks / impressions); email has no impressions
+        CASE
+            WHEN SUM(cs.impressions) > 0
+            THEN ROUND(SUM(cs.clicks)::NUMERIC / SUM(cs.impressions) * 100, 2)
+            ELSE NULL
+        END                                                         AS ctr_pct,
+        -- Cost per Lead
+        CASE
+            WHEN SUM(cs.spend) > 0 AND SUM(cs.leads_generated) > 0
+            THEN ROUND(SUM(cs.spend)::NUMERIC / SUM(cs.leads_generated), 2)
+            ELSE NULL
+        END                                                         AS cost_per_lead,
+        SUM(ca.opportunities_created)                              AS total_opportunities,
+        SUM(ca.closed_won_revenue)                                 AS total_revenue,
+        -- Cost per Acquisition
+        CASE
+            WHEN SUM(cs.spend) > 0 AND SUM(ca.closed_won_count) > 0
+            THEN ROUND(SUM(cs.spend)::NUMERIC / SUM(ca.closed_won_count), 0)
+            ELSE NULL
+        END                                                         AS cost_per_acquisition,
+        -- ROAS (revenue / spend)
+        CASE
+            WHEN SUM(cs.spend) > 0
+            THEN ROUND(SUM(ca.closed_won_revenue)::NUMERIC / SUM(cs.spend), 2)
+            ELSE NULL
+        END                                                         AS roas,
+        RANK() OVER (
+            ORDER BY
+                CASE WHEN SUM(cs.spend) > 0
+                     THEN SUM(ca.closed_won_revenue)::NUMERIC / SUM(cs.spend)
+                     ELSE 9999
+                END DESC
+        )                                                           AS roas_rank
+    FROM channel_spend cs
+    JOIN channel_attribution ca
+        ON cs.channel = ca.channel AND cs.period = ca.period
+    GROUP BY cs.channel
+),
+
+
+-- =============================================================
+--  KPI 2 — CHANNEL PIPELINE CONTRIBUTION %
+-- =============================================================
+pipeline_share AS (
+    SELECT
+        channel,
+        SUM(pipeline_value)                                        AS channel_pipeline,
+        SUM(closed_won_revenue)                                    AS channel_revenue,
+        ROUND(
+            SUM(pipeline_value)::NUMERIC
+            / SUM(SUM(pipeline_value)) OVER () * 100, 1
+        )                                                          AS pipeline_share_pct,
+        ROUND(
+            SUM(closed_won_revenue)::NUMERIC
+            / SUM(SUM(closed_won_revenue)) OVER () * 100, 1
+        )                                                          AS revenue_share_pct,
+        -- Lead-to-opportunity conversion rate
+        ROUND(
+            SUM(opportunities_created)::NUMERIC
+            / NULLIF(
+                (SELECT SUM(leads_generated) FROM channel_spend cs2
+                 WHERE cs2.channel = channel_attribution.channel), 0
+            ) * 100, 1
+        )                                                          AS lead_to_oppty_pct
+    FROM channel_attribution
+    GROUP BY channel
+),
+
+
+-- =============================================================
+--  KPI 3 — FIRST-TOUCH vs LAST-TOUCH DELTA
+--  Shows which channels get more/less credit depending on model
+-- =============================================================
+attribution_delta AS (
+    SELECT
+        ac.channel,
+        ac.first_touch_revenue,
+        ac.last_touch_revenue,
+        ac.first_touch_revenue - ac.last_touch_revenue             AS revenue_delta,
+        ROUND(
+            (ac.first_touch_revenue - ac.last_touch_revenue)::NUMERIC
+            / NULLIF(ac.last_touch_revenue, 0) * 100, 1
+        )                                                          AS delta_pct,
+        CASE
+            WHEN ac.first_touch_revenue > ac.last_touch_revenue
+                THEN '📈 Better at awareness'
+            WHEN ac.first_touch_revenue < ac.last_touch_revenue
+                THEN '🎯 Better at closing'
+            ELSE '⚖️  Balanced'
+        END                                                        AS channel_role
+    FROM attribution_comparison ac
+),
+
+
+-- =============================================================
+--  KPI 4 — MONTHLY TREND: spend vs revenue by channel
+-- =============================================================
+monthly_roas_trend AS (
+    SELECT
+        cs.period,
+        cs.channel,
+        cs.spend,
+        ca.closed_won_revenue                                       AS revenue,
+        CASE
+            WHEN cs.spend > 0
+            THEN ROUND(ca.closed_won_revenue::NUMERIC / cs.spend, 2)
+            ELSE NULL
+        END                                                         AS monthly_roas,
+        LAG(CASE WHEN cs.spend > 0
+                 THEN ROUND(ca.closed_won_revenue::NUMERIC / cs.spend, 2)
+            END)
+            OVER (PARTITION BY cs.channel ORDER BY cs.period)     AS prior_month_roas
+    FROM channel_spend cs
+    JOIN channel_attribution ca
+        ON cs.channel = ca.channel AND cs.period = ca.period
+    WHERE cs.channel IN ('Paid Search', 'Paid Social', 'Email')
+)
+
+
+-- =============================================================
+--  FINAL OUTPUTS
+-- =============================================================
+
+-- Channel Efficiency (primary output)
+SELECT
+    roas_rank                           AS rank,
+    channel,
+    total_spend,
+    total_leads,
+    cost_per_lead,
+    total_opportunities,
+    cost_per_acquisition,
+    total_revenue,
+    roas,
+    ctr_pct
+FROM channel_efficiency
+ORDER BY roas_rank;
+
+-- Run standalone for Pipeline Share:
+-- SELECT * FROM pipeline_share ORDER BY pipeline_share_pct DESC;
+
+-- Run standalone for Attribution Model Comparison:
+-- SELECT * FROM attribution_delta ORDER BY ABS(revenue_delta) DESC;
+
+-- Run standalone for Monthly ROAS Trend:
+-- SELECT * FROM monthly_roas_trend ORDER BY channel, period;
