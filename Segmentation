@@ -1,0 +1,357 @@
+-- =============================================================
+--  SCRIPT 05 — CRM & MARKETING: SEGMENTATION & SCORING
+--  Domain:  Sales CRM + Marketing
+--  Type:    Segmentation & Scoring
+--  Dialect: Standard SQL (portable)
+--
+--  Models covered:
+--    • RFM Segmentation (Recency, Frequency, Monetary)
+--    • Lead Scoring (behavioral + firmographic)
+--    • Account Health Score
+--    • ICP Fit Score (Ideal Customer Profile)
+--    • Segment-level benchmarks & flags
+-- =============================================================
+
+
+WITH
+
+-- ------------------------------------------------------------
+--  BASE: Accounts / Contacts
+-- ------------------------------------------------------------
+accounts AS (
+    SELECT * FROM (VALUES
+        -- (account_id, name, industry, employees, revenue_band,
+        --  region, tech_stack, years_as_customer)
+        ('A001','Apex Logistics',     'Logistics',    1200,'$100M-$500M','Northeast','Salesforce,SAP',    3),
+        ('A002','BrightPath Health',  'Healthcare',    450,'$10M-$50M', 'Southeast','HubSpot,Epic',       2),
+        ('A003','Crestline Finance',  'Finance',      3500,'$500M+',    'Midwest',  'Oracle,Workday',     5),
+        ('A004','DataNest AI',        'Technology',     85,'<$10M',     'West',     'Slack,Linear',       1),
+        ('A005','EduCore Systems',    'Education',     220,'$10M-$50M', 'Northeast','Zoom,Blackboard',    2),
+        ('A006','Forthright Retail',  'Retail',       1800,'$100M-$500M','Southeast','Shopify,Klaviyo',   4),
+        ('A007','GridCore Energy',    'Energy',        670,'$50M-$100M','Midwest',  'SAP,Maximo',         3),
+        ('A008','HealthBridge',       'Healthcare',    130,'<$10M',     'West',     'HubSpot,Athena',     1),
+        ('A009','Innotech Solutions', 'Technology',   4200,'$500M+',    'Northeast','Salesforce,Jira',    6),
+        ('A010','JetStream Media',    'Media',         310,'$10M-$50M', 'West',     'Marketo,Adobe',      2)
+    ) AS t(account_id, name, industry, employees, revenue_band,
+           region, tech_stack, years_as_customer)
+),
+
+-- ------------------------------------------------------------
+--  BASE: Purchase / Transaction history (for RFM)
+-- ------------------------------------------------------------
+transactions AS (
+    SELECT * FROM (VALUES
+        -- (account_id, txn_date, amount)
+        ('A001','2024-05-15'::DATE, 12000),
+        ('A001','2024-03-10'::DATE,  8000),
+        ('A001','2024-01-22'::DATE, 10000),
+        ('A002','2024-06-01'::DATE,  4500),
+        ('A002','2024-04-15'::DATE,  4500),
+        ('A003','2024-05-30'::DATE, 22000),
+        ('A003','2024-04-28'::DATE, 20000),
+        ('A003','2024-03-15'::DATE, 18000),
+        ('A003','2024-02-01'::DATE, 20000),
+        ('A004','2024-06-10'::DATE,  1500),
+        ('A005','2024-04-20'::DATE,  3000),
+        ('A005','2024-02-14'::DATE,  3000),
+        ('A006','2024-03-01'::DATE,  9500),
+        ('A006','2024-01-10'::DATE,  8500),
+        ('A007','2024-05-20'::DATE, 14000),
+        ('A007','2024-04-01'::DATE, 13000),
+        ('A007','2024-02-18'::DATE, 12000),
+        ('A008','2024-06-05'::DATE,  2000),
+        ('A009','2024-06-12'::DATE, 25000),
+        ('A009','2024-05-01'::DATE, 24000),
+        ('A009','2024-03-20'::DATE, 22000),
+        ('A009','2024-02-05'::DATE, 23000),
+        ('A010','2024-05-25'::DATE,  5500),
+        ('A010','2024-04-10'::DATE,  5000)
+    ) AS t(account_id, txn_date, amount)
+),
+
+-- ------------------------------------------------------------
+--  BASE: Lead behavioral signals
+-- ------------------------------------------------------------
+lead_signals AS (
+    SELECT * FROM (VALUES
+        -- (account_id, website_visits_30d, content_downloads,
+        --  webinar_attended, demo_requested, trial_started,
+        --  email_opens_30d, pricing_page_views)
+        ('A001', 18, 4, TRUE,  TRUE,  TRUE,  12, 3),
+        ('A002', 12, 2, TRUE,  FALSE, FALSE,  8, 1),
+        ('A003', 32, 8, TRUE,  TRUE,  TRUE,  25, 6),
+        ('A004', 45, 6, FALSE, TRUE,  TRUE,  20, 4),
+        ('A005',  8, 1, FALSE, FALSE, FALSE,  5, 0),
+        ('A006', 15, 3, TRUE,  FALSE, TRUE,  10, 2),
+        ('A007', 22, 5, TRUE,  TRUE,  FALSE, 18, 3),
+        ('A008',  6, 1, FALSE, FALSE, FALSE,  3, 0),
+        ('A009', 55,10, TRUE,  TRUE,  TRUE,  35, 8),
+        ('A010', 20, 4, TRUE,  FALSE, TRUE,  14, 2)
+    ) AS t(account_id, website_visits_30d, content_downloads,
+           webinar_attended, demo_requested, trial_started,
+           email_opens_30d, pricing_page_views)
+),
+
+
+-- =============================================================
+--  MODEL 1 — RFM SEGMENTATION
+--  Recency  = days since last purchase (lower = better)
+--  Frequency = number of purchases in period
+--  Monetary  = total spend in period
+-- =============================================================
+rfm_raw AS (
+    SELECT
+        account_id,
+        MAX(txn_date)                                               AS last_purchase_date,
+        -- Using a fixed reference date
+        ('2024-06-30'::DATE - MAX(txn_date))                       AS days_since_last_purchase,
+        COUNT(*)                                                    AS purchase_frequency,
+        SUM(amount)                                                 AS total_spend
+    FROM transactions
+    GROUP BY account_id
+),
+
+rfm_scores AS (
+    SELECT
+        account_id,
+        days_since_last_purchase,
+        purchase_frequency,
+        total_spend,
+        -- Recency score: 1 (old) to 4 (recent)
+        CASE
+            WHEN days_since_last_purchase <= 30  THEN 4
+            WHEN days_since_last_purchase <= 60  THEN 3
+            WHEN days_since_last_purchase <= 120 THEN 2
+            ELSE 1
+        END                                                         AS r_score,
+        -- Frequency score: 1 (low) to 4 (high)
+        CASE
+            WHEN purchase_frequency >= 4 THEN 4
+            WHEN purchase_frequency = 3  THEN 3
+            WHEN purchase_frequency = 2  THEN 2
+            ELSE 1
+        END                                                         AS f_score,
+        -- Monetary score: 1 (low) to 4 (high)
+        CASE
+            WHEN total_spend >= 70000 THEN 4
+            WHEN total_spend >= 30000 THEN 3
+            WHEN total_spend >= 10000 THEN 2
+            ELSE 1
+        END                                                         AS m_score
+    FROM rfm_raw
+),
+
+rfm_segments AS (
+    SELECT
+        rs.*,
+        -- Composite RFM score
+        r_score + f_score + m_score                                 AS rfm_total,
+        -- Segment label
+        CASE
+            WHEN r_score = 4 AND f_score >= 3 AND m_score >= 3
+                THEN '⭐ Champions'
+            WHEN r_score >= 3 AND f_score >= 3
+                THEN '💚 Loyal Customers'
+            WHEN r_score = 4 AND f_score <= 2
+                THEN '🆕 Recent Customers'
+            WHEN r_score >= 3 AND m_score >= 3
+                THEN '💰 Big Spenders'
+            WHEN r_score = 2 AND f_score >= 2
+                THEN '😴 At Risk'
+            WHEN r_score = 1
+                THEN '❌ Lost / Dormant'
+            ELSE '📊 Needs Attention'
+        END                                                         AS rfm_segment
+    FROM rfm_scores rs
+),
+
+
+-- =============================================================
+--  MODEL 2 — LEAD SCORING (behavioral + firmographic)
+--
+--  Behavioral signals (60 pts max):
+--    Demo requested   = 20 pts
+--    Trial started    = 15 pts
+--    Pricing page     = 10 pts × views (max 30)
+--    Webinar attended = 10 pts
+--    Content downloads= 2 pts each (max 20)
+--    Website visits   = 0.5 pts each (max 10)
+--    Email opens      = 1 pt each (max 10)
+--
+--  Firmographic signals (40 pts max):
+--    Employees 500+   = 20 pts, 100-499 = 12 pts, <100 = 5 pts
+--    Revenue $100M+   = 15 pts, $10M-$100M = 8 pts, <$10M = 3 pts
+--    ICP Industry     = 5 pts (Tech, Finance, Healthcare)
+-- =============================================================
+lead_scores AS (
+    SELECT
+        ls.account_id,
+        ac.name,
+        ac.industry,
+        ac.employees,
+        ac.revenue_band,
+
+        -- Behavioral score
+        LEAST(CASE WHEN ls.demo_requested  THEN 20 ELSE 0 END
+            + CASE WHEN ls.trial_started   THEN 15 ELSE 0 END
+            + LEAST(ls.pricing_page_views * 10, 30)
+            + CASE WHEN ls.webinar_attended THEN 10 ELSE 0 END
+            + LEAST(ls.content_downloads * 2, 20)
+            + LEAST(ROUND(ls.website_visits_30d * 0.5)::INT, 10)
+            + LEAST(ls.email_opens_30d, 10), 60)               AS behavioral_score,
+
+        -- Firmographic score
+        CASE
+            WHEN ac.employees >= 500 THEN 20
+            WHEN ac.employees >= 100 THEN 12
+            ELSE 5
+        END
+        + CASE
+            WHEN ac.revenue_band IN ('$500M+','$100M-$500M') THEN 15
+            WHEN ac.revenue_band IN ('$50M-$100M','$10M-$50M') THEN 8
+            ELSE 3
+          END
+        + CASE
+            WHEN ac.industry IN ('Technology','Finance','Healthcare') THEN 5
+            ELSE 0
+          END                                                    AS firmographic_score
+
+    FROM lead_signals ls
+    JOIN accounts ac ON ls.account_id = ac.account_id
+),
+
+lead_scoring_output AS (
+    SELECT
+        *,
+        behavioral_score + firmographic_score                       AS total_lead_score,
+        CASE
+            WHEN behavioral_score + firmographic_score >= 80
+                THEN '🔥 Hot — Immediate Outreach'
+            WHEN behavioral_score + firmographic_score >= 60
+                THEN '✅ Warm — Nurture & Qualify'
+            WHEN behavioral_score + firmographic_score >= 40
+                THEN '🔍 Cool — Monitor'
+            ELSE '❄️  Cold — Low Priority'
+        END                                                         AS lead_tier,
+        RANK() OVER (
+            ORDER BY behavioral_score + firmographic_score DESC
+        )                                                           AS lead_rank
+    FROM lead_scores
+),
+
+
+-- =============================================================
+--  MODEL 3 — ICP FIT SCORE
+--  Ideal Customer Profile: Technology or Finance, 200+ employees,
+--  $50M+ revenue, uses Salesforce or HubSpot, 2+ years as customer
+-- =============================================================
+icp_scores AS (
+    SELECT
+        ac.account_id,
+        ac.name,
+        ac.industry,
+        ac.employees,
+        ac.revenue_band,
+        ac.tech_stack,
+        ac.years_as_customer,
+
+        -- ICP dimension checks
+        CASE WHEN ac.industry IN ('Technology','Finance','Healthcare') THEN 25 ELSE 0 END
+            AS icp_industry_pts,
+        CASE WHEN ac.employees >= 500 THEN 25
+             WHEN ac.employees >= 200 THEN 15
+             ELSE 0 END
+            AS icp_size_pts,
+        CASE WHEN ac.revenue_band IN ('$500M+','$100M-$500M','$50M-$100M') THEN 25 ELSE 0 END
+            AS icp_revenue_pts,
+        CASE WHEN ac.tech_stack ILIKE '%Salesforce%'
+              OR ac.tech_stack ILIKE '%HubSpot%' THEN 15 ELSE 5 END
+            AS icp_tech_pts,
+        CASE WHEN ac.years_as_customer >= 3 THEN 10
+             WHEN ac.years_as_customer >= 1 THEN 5 ELSE 0 END
+            AS icp_tenure_pts
+    FROM accounts ac
+),
+
+icp_output AS (
+    SELECT
+        *,
+        icp_industry_pts + icp_size_pts + icp_revenue_pts
+            + icp_tech_pts + icp_tenure_pts                        AS icp_fit_score,
+        CASE
+            WHEN icp_industry_pts + icp_size_pts + icp_revenue_pts
+                 + icp_tech_pts + icp_tenure_pts >= 85
+                THEN '🎯 Perfect ICP Fit'
+            WHEN icp_industry_pts + icp_size_pts + icp_revenue_pts
+                 + icp_tech_pts + icp_tenure_pts >= 65
+                THEN '✅ Strong ICP Fit'
+            WHEN icp_industry_pts + icp_size_pts + icp_revenue_pts
+                 + icp_tech_pts + icp_tenure_pts >= 45
+                THEN '🔍 Partial Fit'
+            ELSE '❌ Outside ICP'
+        END                                                         AS icp_tier
+    FROM icp_scores
+),
+
+
+-- =============================================================
+--  MODEL 4 — COMBINED MASTER SCORE
+--  Blends Lead Score + ICP Fit + RFM for a single priority rank
+--  Weights: Lead Score 40% | ICP 35% | RFM 25%
+-- =============================================================
+master_scores AS (
+    SELECT
+        ls.account_id,
+        ls.name,
+        ls.industry,
+        ls.total_lead_score,
+        ls.lead_tier,
+        ic.icp_fit_score,
+        ic.icp_tier,
+        rfm.rfm_total,
+        rfm.rfm_segment,
+        -- Normalize each to 0-100 then apply weights
+        ROUND(
+            (ls.total_lead_score::NUMERIC / 100 * 40)
+          + (ic.icp_fit_score::NUMERIC   / 100 * 35)
+          + (rfm.rfm_total::NUMERIC      / 12  * 25), 1
+        )                                                           AS master_priority_score,
+        RANK() OVER (
+            ORDER BY
+                (ls.total_lead_score::NUMERIC / 100 * 40)
+              + (ic.icp_fit_score::NUMERIC   / 100 * 35)
+              + (rfm.rfm_total::NUMERIC      / 12  * 25) DESC
+        )                                                           AS priority_rank
+    FROM lead_scoring_output ls
+    JOIN icp_output           ic  ON ls.account_id = ic.account_id
+    JOIN rfm_segments         rfm ON ls.account_id = rfm.account_id
+)
+
+
+-- =============================================================
+--  FINAL OUTPUTS
+-- =============================================================
+
+-- Master Priority Score (primary output)
+SELECT
+    priority_rank,
+    name,
+    industry,
+    total_lead_score,
+    lead_tier,
+    icp_fit_score,
+    icp_tier,
+    rfm_segment,
+    master_priority_score
+FROM master_scores
+ORDER BY priority_rank;
+
+-- Run standalone for RFM only:
+-- SELECT account_id, r_score, f_score, m_score, rfm_total, rfm_segment
+-- FROM rfm_segments ORDER BY rfm_total DESC;
+
+-- Run standalone for Lead Scores only:
+-- SELECT * FROM lead_scoring_output ORDER BY lead_rank;
+
+-- Run standalone for ICP Fit only:
+-- SELECT * FROM icp_output ORDER BY icp_fit_score DESC;
