@@ -1,0 +1,596 @@
+-- =============================================================
+--  SALES CRM — OVERALL SALES METRICS SCRIPT
+--
+--  Sections:
+--    0.  Fake CRM Base Tables (inline VALUES)
+--    1.  Year-over-Year (YoY) Growth
+--    2.  Month-over-Month (MoM) Growth
+--    3.  Quarter-over-Quarter (QoQ) Growth
+--    4.  Churn Rate
+--    5.  Top Industries by Revenue
+--    6.  Marketing Funnel Distribution
+--    7.  Accounts Poised for Growth (composite score)
+-- =============================================================
+
+
+-- =============================================================
+--  SECTION 0 — FAKE CRM BASE TABLES
+--  Defined once as CTEs, reused across all metric blocks.
+-- =============================================================
+
+WITH
+
+-- ------------------------------------------------------------
+--  accounts: one row per customer account
+-- ------------------------------------------------------------
+accounts AS (
+    SELECT *
+    FROM (VALUES
+        -- (account_id, name, industry, segment, arr, mrr, contract_start, contract_end, status, csm_owner)
+        (101, 'Apex Logistics',        'Logistics',       'Enterprise', 120000, 10000, '2022-01-15'::DATE, '2024-01-15'::DATE, 'active',   'Sarah K.'),
+        (102, 'BrightPath Health',     'Healthcare',      'Mid-Market',  48000,  4000, '2022-03-01'::DATE, '2024-03-01'::DATE, 'active',   'Tom R.'),
+        (103, 'Crestline Finance',     'Finance',         'Enterprise', 240000, 20000, '2021-06-01'::DATE, '2023-06-01'::DATE, 'churned',  'Sarah K.'),
+        (104, 'DataNest AI',           'Technology',      'SMB',         18000,  1500, '2023-01-10'::DATE, '2025-01-10'::DATE, 'active',   'Marcus L.'),
+        (105, 'EduCore Systems',       'Education',       'Mid-Market',  36000,  3000, '2022-09-01'::DATE, '2024-09-01'::DATE, 'active',   'Tom R.'),
+        (106, 'Forthright Retail',     'Retail',          'Enterprise',  96000,  8000, '2021-11-01'::DATE, '2023-11-01'::DATE, 'churned',  'Marcus L.'),
+        (107, 'GridCore Energy',       'Energy',          'Enterprise', 180000, 15000, '2023-02-14'::DATE, '2025-02-14'::DATE, 'active',   'Sarah K.'),
+        (108, 'HealthBridge Co.',      'Healthcare',      'SMB',         24000,  2000, '2022-07-01'::DATE, '2024-07-01'::DATE, 'active',   'Tom R.'),
+        (109, 'Innotech Solutions',    'Technology',      'Enterprise', 300000, 25000, '2020-04-01'::DATE, '2024-04-01'::DATE, 'active',   'Sarah K.'),
+        (110, 'JetStream Media',       'Media',           'Mid-Market',  60000,  5000, '2023-05-01'::DATE, '2025-05-01'::DATE, 'active',   'Marcus L.'),
+        (111, 'KinderLearn',           'Education',       'SMB',         12000,  1000, '2022-08-01'::DATE, '2023-08-01'::DATE, 'churned',  'Tom R.'),
+        (112, 'Lumen Pharma',          'Healthcare',      'Enterprise', 210000, 17500, '2023-03-01'::DATE, '2025-03-01'::DATE, 'active',   'Sarah K.'),
+        (113, 'MindBridge Consulting', 'Professional Svcs','Mid-Market', 54000,  4500, '2021-10-01'::DATE, '2023-10-01'::DATE, 'churned',  'Marcus L.'),
+        (114, 'NovaBuild Infra',       'Construction',    'Mid-Market',  42000,  3500, '2023-06-15'::DATE, '2025-06-15'::DATE, 'active',   'Tom R.'),
+        (115, 'OmniTrade Corp',        'Logistics',       'Enterprise', 156000, 13000, '2022-12-01'::DATE, '2024-12-01'::DATE, 'active',   'Sarah K.')
+    ) AS t(account_id, name, industry, segment, arr, mrr, contract_start, contract_end, status, csm_owner)
+),
+
+-- ------------------------------------------------------------
+--  monthly_revenue: monthly closed-won revenue snapshots
+-- ------------------------------------------------------------
+monthly_revenue AS (
+    SELECT *
+    FROM (VALUES
+        -- (period, revenue, new_accounts, expansions, churned_arr)
+        ('2022-01'::DATE,  85000,  2, 5000,  10000),
+        ('2022-02'::DATE,  88000,  1, 3000,   8000),
+        ('2022-03'::DATE,  94000,  3, 7000,   5000),
+        ('2022-04'::DATE,  91000,  2, 4000,   9000),
+        ('2022-05'::DATE,  97000,  2, 6000,   4000),
+        ('2022-06'::DATE, 103000,  3, 8000,   3000),
+        ('2022-07'::DATE, 100000,  1, 5000,   6000),
+        ('2022-08'::DATE, 108000,  2, 9000,   2000),
+        ('2022-09'::DATE, 112000,  3, 6000,   4000),
+        ('2022-10'::DATE, 109000,  2, 4000,   7000),
+        ('2022-11'::DATE, 115000,  3, 8000,   3000),
+        ('2022-12'::DATE, 120000,  4, 10000,  2000),
+        ('2023-01'::DATE, 118000,  2, 6000,   8000),
+        ('2023-02'::DATE, 122000,  2, 5000,   5000),
+        ('2023-03'::DATE, 130000,  4, 9000,   3000),
+        ('2023-04'::DATE, 127000,  2, 7000,   6000),
+        ('2023-05'::DATE, 135000,  3, 8000,   2000),
+        ('2023-06'::DATE, 141000,  3, 11000,  4000),
+        ('2023-07'::DATE, 138000,  2, 6000,   5000),
+        ('2023-08'::DATE, 145000,  4, 10000,  3000),
+        ('2023-09'::DATE, 152000,  3, 12000,  2000),
+        ('2023-10'::DATE, 149000,  2, 8000,   4000),
+        ('2023-11'::DATE, 158000,  4, 11000,  1000),
+        ('2023-12'::DATE, 165000,  5, 15000,  2000),
+        ('2024-01'::DATE, 163000,  3, 8000,   6000),
+        ('2024-02'::DATE, 169000,  3, 9000,   3000),
+        ('2024-03'::DATE, 178000,  4, 13000,  2000),
+        ('2024-04'::DATE, 175000,  3, 10000,  5000),
+        ('2024-05'::DATE, 183000,  4, 12000,  2000),
+        ('2024-06'::DATE, 190000,  5, 15000,  1000)
+    ) AS t(period, revenue, new_accounts, expansions, churned_arr)
+),
+
+-- ------------------------------------------------------------
+--  funnel_events: marketing funnel stage counts by month
+-- ------------------------------------------------------------
+funnel_events AS (
+    SELECT *
+    FROM (VALUES
+        -- (period, mql, sal, sql, opportunity, closed_won, closed_lost)
+        ('2024-01'::DATE, 520, 310, 180, 95, 28, 42),
+        ('2024-02'::DATE, 490, 295, 170, 88, 25, 39),
+        ('2024-03'::DATE, 610, 385, 220, 115, 35, 48),
+        ('2024-04'::DATE, 575, 360, 205, 108, 32, 45),
+        ('2024-05'::DATE, 640, 400, 235, 122, 38, 50),
+        ('2024-06'::DATE, 680, 425, 250, 130, 42, 52)
+    ) AS t(period, mql, sal, sql, opportunity, closed_won, closed_lost)
+),
+
+-- ------------------------------------------------------------
+--  account_activity: engagement signals per account
+--  Used for the "poised for growth" score
+-- ------------------------------------------------------------
+account_activity AS (
+    SELECT *
+    FROM (VALUES
+        -- (account_id, logins_last_90d, features_adopted, support_tickets_open,
+        --  nps_score, expansion_convos, days_since_last_qbr, contract_days_remaining)
+        (101,  95, 8,  0, 72,  2,  30, 230),
+        (102,  40, 4,  2, 55,  0,  90, 365),
+        (104, 210, 12, 0, 88,  3,  15,  45),
+        (105,  30, 3,  5, 40,  0, 180, 400),
+        (107, 180, 10, 1, 80,  2,  20, 260),
+        (108,  15, 2,  8, 32,  0, 270, 395),
+        (109, 310, 15, 0, 91,  4,  10,  90),
+        (110, 120, 9,  1, 75,  2,  45, 365),
+        (112, 145, 11, 0, 83,  3,  25, 275),
+        (114,  55, 5,  3, 60,  1,  60, 380),
+        (115, 200, 13, 0, 85,  3,  18, 190)
+    ) AS t(account_id, logins_last_90d, features_adopted, support_tickets_open,
+           nps_score, expansion_convos, days_since_last_qbr, contract_days_remaining)
+),
+
+
+-- =============================================================
+--  SECTION 1 — YEAR-OVER-YEAR (YoY) GROWTH
+--  Compares same calendar month across years.
+--  Revenue growth % = (current - prior) / prior * 100
+-- =============================================================
+
+yoy_base AS (
+    SELECT
+        period,
+        EXTRACT(YEAR  FROM period)::INT AS yr,
+        EXTRACT(MONTH FROM period)::INT AS mo,
+        revenue
+    FROM monthly_revenue
+),
+
+yoy_growth AS (
+    SELECT
+        curr.period,
+        curr.yr                                                         AS current_year,
+        curr.mo                                                         AS month_num,
+        TO_CHAR(curr.period, 'Mon')                                     AS month_name,
+        curr.revenue                                                    AS current_revenue,
+        prev.revenue                                                    AS prior_year_revenue,
+        curr.revenue - prev.revenue                                     AS yoy_revenue_delta,
+        ROUND(
+            (curr.revenue - prev.revenue)::NUMERIC / prev.revenue * 100, 2
+        )                                                               AS yoy_growth_pct
+    FROM yoy_base curr
+    JOIN yoy_base prev
+        ON  curr.mo = prev.mo
+        AND curr.yr = prev.yr + 1
+    ORDER BY curr.period
+),
+
+
+-- =============================================================
+--  SECTION 2 — MONTH-OVER-MONTH (MoM) GROWTH
+--  Uses LAG() to pull the immediately preceding month.
+-- =============================================================
+
+mom_growth AS (
+    SELECT
+        period,
+        TO_CHAR(period, 'YYYY-Mon')                                     AS period_label,
+        revenue                                                         AS current_revenue,
+        LAG(revenue) OVER (ORDER BY period)                             AS prior_month_revenue,
+        revenue - LAG(revenue) OVER (ORDER BY period)                   AS mom_revenue_delta,
+        ROUND(
+            (revenue - LAG(revenue) OVER (ORDER BY period))::NUMERIC
+            / NULLIF(LAG(revenue) OVER (ORDER BY period), 0) * 100, 2
+        )                                                               AS mom_growth_pct,
+        new_accounts,
+        expansions,
+        churned_arr
+    FROM monthly_revenue
+    ORDER BY period
+),
+
+
+-- =============================================================
+--  SECTION 3 — QUARTER-OVER-QUARTER (QoQ) GROWTH
+--  Aggregates monthly revenue into quarters first, then compares.
+-- =============================================================
+
+quarterly_revenue AS (
+    SELECT
+        EXTRACT(YEAR    FROM period)::INT                               AS yr,
+        EXTRACT(QUARTER FROM period)::INT                               AS qtr,
+        CONCAT('Q', EXTRACT(QUARTER FROM period)::INT,
+               '-', EXTRACT(YEAR FROM period)::INT)                    AS quarter_label,
+        SUM(revenue)                                                    AS quarterly_revenue,
+        SUM(new_accounts)                                               AS quarterly_new_accounts,
+        SUM(churned_arr)                                                AS quarterly_churned_arr
+    FROM monthly_revenue
+    GROUP BY 1, 2, 3
+),
+
+qoq_growth AS (
+    SELECT
+        curr.quarter_label                                              AS current_quarter,
+        curr.quarterly_revenue                                          AS current_revenue,
+        prev.quarterly_revenue                                          AS prior_quarter_revenue,
+        curr.quarterly_revenue - prev.quarterly_revenue                 AS qoq_revenue_delta,
+        ROUND(
+            (curr.quarterly_revenue - prev.quarterly_revenue)::NUMERIC
+            / NULLIF(prev.quarterly_revenue, 0) * 100, 2
+        )                                                               AS qoq_growth_pct,
+        curr.quarterly_new_accounts,
+        curr.quarterly_churned_arr
+    FROM quarterly_revenue curr
+    JOIN quarterly_revenue prev
+        ON  (curr.yr = prev.yr     AND curr.qtr = prev.qtr + 1)
+         OR (curr.yr = prev.yr + 1 AND curr.qtr = 1 AND prev.qtr = 4)
+    ORDER BY curr.yr, curr.qtr
+),
+
+
+-- =============================================================
+--  SECTION 4 — CHURN RATE
+--  Monthly churn rate = churned ARR / total ARR at period start
+--  Annualized churn = monthly churn * 12
+-- =============================================================
+
+churn_metrics AS (
+    SELECT
+        period,
+        TO_CHAR(period, 'YYYY-Mon')                                     AS period_label,
+        revenue                                                         AS beginning_arr,
+        churned_arr,
+        ROUND(churned_arr::NUMERIC / NULLIF(revenue, 0) * 100, 2)       AS monthly_churn_rate_pct,
+        ROUND(churned_arr::NUMERIC / NULLIF(revenue, 0) * 100 * 12, 2)  AS annualized_churn_rate_pct,
+        -- Net Revenue Retention: (revenue + expansions - churn) / revenue
+        ROUND(
+            (revenue + expansions - churned_arr)::NUMERIC
+            / NULLIF(revenue, 0) * 100, 2
+        )                                                               AS net_revenue_retention_pct
+    FROM monthly_revenue
+    ORDER BY period
+),
+
+
+-- =============================================================
+--  SECTION 5 — TOP INDUSTRIES BY REVENUE
+--  Ranks industries by total active ARR and account count.
+-- =============================================================
+
+industry_metrics AS (
+    SELECT
+        industry,
+        COUNT(*)                                                        AS total_accounts,
+        SUM(CASE WHEN status = 'active'  THEN 1 ELSE 0 END)            AS active_accounts,
+        SUM(CASE WHEN status = 'churned' THEN 1 ELSE 0 END)            AS churned_accounts,
+        SUM(arr)                                                        AS total_arr,
+        SUM(CASE WHEN status = 'active' THEN arr ELSE 0 END)           AS active_arr,
+        ROUND(AVG(arr), 0)                                              AS avg_arr_per_account,
+        ROUND(
+            SUM(CASE WHEN status = 'churned' THEN 1 ELSE 0 END)::NUMERIC
+            / COUNT(*) * 100, 1
+        )                                                               AS industry_churn_rate_pct,
+        RANK() OVER (ORDER BY SUM(CASE WHEN status='active' THEN arr ELSE 0 END) DESC) AS revenue_rank
+    FROM accounts
+    GROUP BY industry
+    ORDER BY active_arr DESC
+),
+
+
+-- =============================================================
+--  SECTION 6 — MARKETING FUNNEL DISTRIBUTION
+--  Stage-by-stage counts + conversion rates between each stage.
+-- =============================================================
+
+funnel_metrics AS (
+    SELECT
+        period,
+        TO_CHAR(period, 'YYYY-Mon')                                     AS period_label,
+        mql,
+        sal,
+        sql,
+        opportunity                                                     AS oppty,
+        closed_won,
+        closed_lost,
+        closed_won + closed_lost                                        AS total_decisions,
+
+        -- Stage-to-stage conversion rates
+        ROUND(sal::NUMERIC        / NULLIF(mql, 0)         * 100, 1)   AS mql_to_sal_pct,
+        ROUND(sql::NUMERIC        / NULLIF(sal, 0)         * 100, 1)   AS sal_to_sql_pct,
+        ROUND(opportunity::NUMERIC / NULLIF(sql, 0)        * 100, 1)   AS sql_to_oppty_pct,
+        ROUND(closed_won::NUMERIC / NULLIF(opportunity, 0) * 100, 1)   AS oppty_to_won_pct,
+
+        -- Overall funnel win rate: MQL → Closed Won
+        ROUND(closed_won::NUMERIC / NULLIF(mql, 0)         * 100, 2)   AS overall_win_rate_pct,
+
+        -- Win rate among decisions made
+        ROUND(
+            closed_won::NUMERIC / NULLIF(closed_won + closed_lost, 0) * 100, 1
+        )                                                               AS decision_win_rate_pct
+    FROM funnel_events
+    ORDER BY period
+),
+
+
+-- =============================================================
+--  SECTION 7 — ACCOUNTS POISED FOR GROWTH
+--
+--  Composite "Growth Readiness Score" (0–100) built from:
+--    • Engagement score  (40 pts): logins + features adopted
+--    • Health score      (30 pts): NPS + low support tickets
+--    • Expansion signal  (20 pts): active expansion conversations
+--    • Timing score      (10 pts): contract renewal window (sweet spot = 90-270 days out)
+--
+--  Tier:
+--    80–100 = 🔥 High Priority
+--    60–79  = ✅ Strong Candidate
+--    40–59  = 🔍 Monitor Closely
+--    <40    = ⚠️  At Risk / Not Ready
+-- =============================================================
+
+growth_score_raw AS (
+    SELECT
+        aa.account_id,
+        ac.name,
+        ac.industry,
+        ac.segment,
+        ac.arr,
+        ac.mrr,
+        ac.csm_owner,
+        aa.logins_last_90d,
+        aa.features_adopted,
+        aa.support_tickets_open,
+        aa.nps_score,
+        aa.expansion_convos,
+        aa.days_since_last_qbr,
+        aa.contract_days_remaining,
+
+        -- ENGAGEMENT SCORE (40 pts max)
+        -- Logins: 0-210+ normalized to 20 pts
+        -- Features adopted: 0-15 normalized to 20 pts
+        LEAST(ROUND(aa.logins_last_90d::NUMERIC / 210 * 20, 1), 20.0)
+        + LEAST(ROUND(aa.features_adopted::NUMERIC / 15 * 20, 1), 20.0)
+            AS engagement_score,
+
+        -- HEALTH SCORE (30 pts max)
+        -- NPS: 0-100 normalized to 20 pts
+        -- Support tickets: 0 tickets = 10 pts, penalty -2 per open ticket
+        ROUND(aa.nps_score::NUMERIC / 100 * 20, 1)
+        + GREATEST(10 - (aa.support_tickets_open * 2), 0)
+            AS health_score,
+
+        -- EXPANSION SIGNAL SCORE (20 pts max)
+        -- 1 active expansion convo = 10 pts, 2+ = 20 pts
+        LEAST(aa.expansion_convos * 10, 20)
+            AS expansion_score,
+
+        -- TIMING SCORE (10 pts max)
+        -- Sweet spot: renewal in 90-270 days
+        CASE
+            WHEN aa.contract_days_remaining BETWEEN 90 AND 270 THEN 10
+            WHEN aa.contract_days_remaining BETWEEN 30  AND 89  THEN  6
+            WHEN aa.contract_days_remaining BETWEEN 271 AND 365 THEN  4
+            ELSE 2
+        END AS timing_score
+
+    FROM account_activity aa
+    JOIN accounts ac ON aa.account_id = ac.account_id
+    WHERE ac.status = 'active'
+),
+
+growth_readiness AS (
+    SELECT
+        account_id,
+        name,
+        industry,
+        segment,
+        arr,
+        mrr,
+        csm_owner,
+        logins_last_90d,
+        features_adopted,
+        nps_score,
+        expansion_convos,
+        contract_days_remaining,
+
+        engagement_score,
+        health_score,
+        expansion_score,
+        timing_score,
+
+        -- Composite score
+        ROUND(engagement_score + health_score + expansion_score + timing_score, 1)
+            AS growth_readiness_score,
+
+        -- Tier classification
+        CASE
+            WHEN ROUND(engagement_score + health_score + expansion_score + timing_score, 1) >= 80
+                THEN '🔥 High Priority'
+            WHEN ROUND(engagement_score + health_score + expansion_score + timing_score, 1) >= 60
+                THEN '✅ Strong Candidate'
+            WHEN ROUND(engagement_score + health_score + expansion_score + timing_score, 1) >= 40
+                THEN '🔍 Monitor Closely'
+            ELSE '⚠️  At Risk / Not Ready'
+        END AS growth_tier,
+
+        RANK() OVER (
+            ORDER BY ROUND(engagement_score + health_score + expansion_score + timing_score, 1) DESC
+        ) AS growth_rank
+
+    FROM growth_score_raw
+)
+
+
+-- =============================================================
+--  FINAL OUTPUTS — Run each SELECT independently or together
+-- =============================================================
+
+-- ── 1. YoY Growth ───────────────────────────────────────────
+SELECT '=== YEAR-OVER-YEAR GROWTH ===' AS section, NULL::TEXT AS col2, NULL::TEXT AS col3,
+       NULL::TEXT AS col4, NULL::TEXT AS col5, NULL::TEXT AS col6
+UNION ALL
+SELECT
+    period_label        AS period,
+    current_year::TEXT,
+    current_revenue::TEXT,
+    prior_year_revenue::TEXT,
+    yoy_revenue_delta::TEXT,
+    yoy_growth_pct::TEXT || '%' AS yoy_growth
+FROM (
+    SELECT
+        TO_CHAR(period, 'YYYY-Mon') AS period_label,
+        current_year,
+        current_revenue,
+        prior_year_revenue,
+        yoy_revenue_delta,
+        yoy_growth_pct
+    FROM yoy_growth
+) x
+
+UNION ALL SELECT '---',NULL,NULL,NULL,NULL,NULL
+
+-- ── 2. MoM Growth ───────────────────────────────────────────
+UNION ALL
+SELECT '=== MONTH-OVER-MONTH GROWTH ===',NULL,NULL,NULL,NULL,NULL
+UNION ALL
+SELECT
+    period_label,
+    current_revenue::TEXT,
+    prior_month_revenue::TEXT,
+    mom_revenue_delta::TEXT,
+    mom_growth_pct::TEXT || '%',
+    NULL
+FROM mom_growth
+
+UNION ALL SELECT '---',NULL,NULL,NULL,NULL,NULL
+
+-- ── 3. QoQ Growth ───────────────────────────────────────────
+UNION ALL
+SELECT '=== QUARTER-OVER-QUARTER GROWTH ===',NULL,NULL,NULL,NULL,NULL
+UNION ALL
+SELECT
+    current_quarter,
+    current_revenue::TEXT,
+    prior_quarter_revenue::TEXT,
+    qoq_revenue_delta::TEXT,
+    qoq_growth_pct::TEXT || '%',
+    NULL
+FROM qoq_growth
+
+UNION ALL SELECT '---',NULL,NULL,NULL,NULL,NULL
+
+-- ── 4. Churn Metrics ────────────────────────────────────────
+UNION ALL
+SELECT '=== CHURN METRICS ===',NULL,NULL,NULL,NULL,NULL
+UNION ALL
+SELECT
+    period_label,
+    churned_arr::TEXT,
+    monthly_churn_rate_pct::TEXT || '%',
+    annualized_churn_rate_pct::TEXT || '%',
+    net_revenue_retention_pct::TEXT || '%',
+    NULL
+FROM churn_metrics
+
+UNION ALL SELECT '---',NULL,NULL,NULL,NULL,NULL
+
+-- ── 5. Top Industries ───────────────────────────────────────
+UNION ALL
+SELECT '=== TOP INDUSTRIES BY ACTIVE ARR ===',NULL,NULL,NULL,NULL,NULL
+UNION ALL
+SELECT
+    industry,
+    active_accounts::TEXT,
+    active_arr::TEXT,
+    avg_arr_per_account::TEXT,
+    industry_churn_rate_pct::TEXT || '%',
+    revenue_rank::TEXT
+FROM industry_metrics
+
+UNION ALL SELECT '---',NULL,NULL,NULL,NULL,NULL
+
+-- ── 6. Funnel Distribution ──────────────────────────────────
+UNION ALL
+SELECT '=== MARKETING FUNNEL DISTRIBUTION ===',NULL,NULL,NULL,NULL,NULL
+UNION ALL
+SELECT
+    period_label,
+    mql::TEXT || ' MQL → ' || closed_won::TEXT || ' Won',
+    overall_win_rate_pct::TEXT || '% overall win rate',
+    oppty_to_won_pct::TEXT || '% oppty→won',
+    decision_win_rate_pct::TEXT || '% decision win rate',
+    NULL
+FROM funnel_metrics
+
+UNION ALL SELECT '---',NULL,NULL,NULL,NULL,NULL
+
+-- ── 7. Accounts Poised for Growth ───────────────────────────
+UNION ALL
+SELECT '=== ACCOUNTS POISED FOR GROWTH ===',NULL,NULL,NULL,NULL,NULL
+UNION ALL
+SELECT
+    name,
+    industry,
+    arr::TEXT,
+    growth_readiness_score::TEXT || ' / 100',
+    growth_tier,
+    csm_owner
+FROM growth_readiness
+ORDER BY
+    CASE section
+        WHEN '=== YEAR-OVER-YEAR GROWTH ==='             THEN 1
+        WHEN '=== MONTH-OVER-MONTH GROWTH ==='           THEN 2
+        WHEN '=== QUARTER-OVER-QUARTER GROWTH ==='       THEN 3
+        WHEN '=== CHURN METRICS ==='                     THEN 4
+        WHEN '=== TOP INDUSTRIES BY ACTIVE ARR ==='      THEN 5
+        WHEN '=== MARKETING FUNNEL DISTRIBUTION ==='     THEN 6
+        WHEN '=== ACCOUNTS POISED FOR GROWTH ==='        THEN 7
+        ELSE 99
+    END;
+
+
+-- =============================================================
+--  STANDALONE QUERIES — Run these individually for clean output
+-- =============================================================
+
+/*
+
+-- YoY Growth (standalone)
+SELECT period_label, current_year, current_revenue, prior_year_revenue,
+       yoy_revenue_delta, yoy_growth_pct
+FROM yoy_growth
+ORDER BY period;
+
+-- MoM Growth (standalone)
+SELECT period_label, current_revenue, prior_month_revenue,
+       mom_revenue_delta, mom_growth_pct
+FROM mom_growth
+ORDER BY period;
+
+-- QoQ Growth (standalone)
+SELECT current_quarter, current_revenue, prior_quarter_revenue,
+       qoq_revenue_delta, qoq_growth_pct, quarterly_new_accounts
+FROM qoq_growth;
+
+-- Churn (standalone)
+SELECT period_label, churned_arr, monthly_churn_rate_pct,
+       annualized_churn_rate_pct, net_revenue_retention_pct
+FROM churn_metrics
+ORDER BY period;
+
+-- Top Industries (standalone)
+SELECT revenue_rank, industry, active_accounts, active_arr,
+       avg_arr_per_account, industry_churn_rate_pct
+FROM industry_metrics
+ORDER BY revenue_rank;
+
+-- Funnel (standalone)
+SELECT period_label, mql, sal, sql, oppty, closed_won,
+       mql_to_sal_pct, sal_to_sql_pct, sql_to_oppty_pct,
+       oppty_to_won_pct, overall_win_rate_pct, decision_win_rate_pct
+FROM funnel_metrics
+ORDER BY period;
+
+-- Growth Readiness (standalone)
+SELECT growth_rank, name, industry, segment, arr, csm_owner,
+       engagement_score, health_score, expansion_score, timing_score,
+       growth_readiness_score, growth_tier
+FROM growth_readiness
+ORDER BY growth_rank;
+
+*/
