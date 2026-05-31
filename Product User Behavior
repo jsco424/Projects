@@ -1,0 +1,274 @@
+-- =============================================================
+--  SCRIPT 03 — PRODUCT & USER BEHAVIOR: COHORT & RETENTION
+--  Domain:  Product & User Behavior
+--  Type:    Cohort & Retention Analysis
+--  Dialect: Standard SQL (portable)
+--
+--  Analyses covered:
+--    • Monthly acquisition cohorts
+--    • Retention curve (M0 → M6)
+--    • Churn by cohort month
+--    • Average sessions & feature adoption by cohort
+--    • Time-to-first-value (TTFV)
+-- =============================================================
+
+
+WITH
+
+-- ------------------------------------------------------------
+--  BASE: Users with signup date and plan
+-- ------------------------------------------------------------
+users AS (
+    SELECT * FROM (VALUES
+        -- (user_id, signup_date, plan, acquisition_channel)
+        (1001, '2024-01-05'::DATE, 'pro',   'paid_search'),
+        (1002, '2024-01-12'::DATE, 'free',  'organic'),
+        (1003, '2024-01-18'::DATE, 'pro',   'referral'),
+        (1004, '2024-01-22'::DATE, 'free',  'paid_social'),
+        (1005, '2024-01-28'::DATE, 'pro',   'organic'),
+        (1006, '2024-02-03'::DATE, 'free',  'paid_search'),
+        (1007, '2024-02-10'::DATE, 'pro',   'referral'),
+        (1008, '2024-02-15'::DATE, 'free',  'organic'),
+        (1009, '2024-02-20'::DATE, 'pro',   'paid_social'),
+        (1010, '2024-02-25'::DATE, 'free',  'paid_search'),
+        (1011, '2024-03-02'::DATE, 'pro',   'organic'),
+        (1012, '2024-03-08'::DATE, 'free',  'referral'),
+        (1013, '2024-03-14'::DATE, 'pro',   'paid_search'),
+        (1014, '2024-03-19'::DATE, 'free',  'organic'),
+        (1015, '2024-03-25'::DATE, 'pro',   'paid_social'),
+        (1016, '2024-04-01'::DATE, 'free',  'paid_search'),
+        (1017, '2024-04-07'::DATE, 'pro',   'organic'),
+        (1018, '2024-04-12'::DATE, 'free',  'referral'),
+        (1019, '2024-04-18'::DATE, 'pro',   'paid_search'),
+        (1020, '2024-04-24'::DATE, 'free',  'organic')
+    ) AS t(user_id, signup_date, plan, acquisition_channel)
+),
+
+-- ------------------------------------------------------------
+--  BASE: Monthly activity log (whether a user was active)
+-- ------------------------------------------------------------
+user_activity AS (
+    SELECT * FROM (VALUES
+        -- (user_id, activity_month, sessions, features_used)
+        -- Jan cohort
+        (1001,'2024-01'::DATE,12,4),(1001,'2024-02'::DATE,10,5),(1001,'2024-03'::DATE,8,5),
+        (1001,'2024-04'::DATE,9,6),(1001,'2024-05'::DATE,7,6),(1001,'2024-06'::DATE,6,6),
+        (1002,'2024-01'::DATE,5,1),(1002,'2024-02'::DATE,3,1),(1002,'2024-03'::DATE,0,0),
+        (1003,'2024-01'::DATE,18,6),(1003,'2024-02'::DATE,15,7),(1003,'2024-03'::DATE,14,7),
+        (1003,'2024-04'::DATE,12,8),(1003,'2024-05'::DATE,11,8),(1003,'2024-06'::DATE,10,8),
+        (1004,'2024-01'::DATE,4,1),(1004,'2024-02'::DATE,2,1),(1004,'2024-03'::DATE,1,1),
+        (1004,'2024-04'::DATE,0,0),
+        (1005,'2024-01'::DATE,14,5),(1005,'2024-02'::DATE,12,5),(1005,'2024-03'::DATE,11,6),
+        (1005,'2024-04'::DATE,10,6),(1005,'2024-05'::DATE,9,7),(1005,'2024-06'::DATE,8,7),
+        -- Feb cohort
+        (1006,'2024-02'::DATE,6,2),(1006,'2024-03'::DATE,4,2),(1006,'2024-04'::DATE,0,0),
+        (1007,'2024-02'::DATE,20,7),(1007,'2024-03'::DATE,18,8),(1007,'2024-04'::DATE,16,8),
+        (1007,'2024-05'::DATE,15,9),(1007,'2024-06'::DATE,14,9),
+        (1008,'2024-02'::DATE,3,1),(1008,'2024-03'::DATE,2,1),(1008,'2024-04'::DATE,0,0),
+        (1009,'2024-02'::DATE,11,4),(1009,'2024-03'::DATE,10,4),(1009,'2024-04'::DATE,9,5),
+        (1009,'2024-05'::DATE,8,5),(1009,'2024-06'::DATE,7,5),
+        (1010,'2024-02'::DATE,5,2),(1010,'2024-03'::DATE,3,2),(1010,'2024-04'::DATE,1,1),
+        (1010,'2024-05'::DATE,0,0),
+        -- Mar cohort
+        (1011,'2024-03'::DATE,16,5),(1011,'2024-04'::DATE,14,6),(1011,'2024-05'::DATE,13,6),
+        (1011,'2024-06'::DATE,12,7),
+        (1012,'2024-03'::DATE,4,1),(1012,'2024-04'::DATE,2,1),(1012,'2024-05'::DATE,0,0),
+        (1013,'2024-03'::DATE,13,5),(1013,'2024-04'::DATE,12,5),(1013,'2024-05'::DATE,11,6),
+        (1013,'2024-06'::DATE,10,6),
+        (1014,'2024-03'::DATE,3,1),(1014,'2024-04'::DATE,0,0),
+        (1015,'2024-03'::DATE,15,6),(1015,'2024-04'::DATE,13,6),(1015,'2024-05'::DATE,12,7),
+        (1015,'2024-06'::DATE,11,7),
+        -- Apr cohort
+        (1016,'2024-04'::DATE,5,2),(1016,'2024-05'::DATE,3,2),(1016,'2024-06'::DATE,2,2),
+        (1017,'2024-04'::DATE,14,5),(1017,'2024-05'::DATE,13,5),(1017,'2024-06'::DATE,12,6),
+        (1018,'2024-04'::DATE,4,1),(1018,'2024-05'::DATE,2,1),(1018,'2024-06'::DATE,0,0),
+        (1019,'2024-04'::DATE,12,4),(1019,'2024-05'::DATE,11,5),(1019,'2024-06'::DATE,10,5),
+        (1020,'2024-04'::DATE,6,2),(1020,'2024-05'::DATE,4,2),(1020,'2024-06'::DATE,3,2)
+    ) AS t(user_id, activity_month, sessions, features_used)
+),
+
+-- ------------------------------------------------------------
+--  BASE: First-value event (e.g. first meaningful action taken)
+-- ------------------------------------------------------------
+first_value_events AS (
+    SELECT * FROM (VALUES
+        -- (user_id, first_value_date)
+        (1001, '2024-01-07'::DATE),
+        (1003, '2024-01-19'::DATE),
+        (1005, '2024-01-30'::DATE),
+        (1007, '2024-02-11'::DATE),
+        (1009, '2024-02-22'::DATE),
+        (1011, '2024-03-04'::DATE),
+        (1013, '2024-03-16'::DATE),
+        (1015, '2024-03-27'::DATE),
+        (1017, '2024-04-09'::DATE),
+        (1019, '2024-04-20'::DATE)
+        -- Free users without a first-value event are excluded (never activated)
+    ) AS t(user_id, first_value_date)
+),
+
+
+-- =============================================================
+--  STEP 1 — ASSIGN COHORT MONTH TO EACH USER
+-- =============================================================
+user_cohorts AS (
+    SELECT
+        u.user_id,
+        u.plan,
+        u.acquisition_channel,
+        -- Truncate signup date to first day of month = cohort
+        DATE_TRUNC('month', u.signup_date)::DATE                    AS cohort_month
+    FROM users u
+),
+
+
+-- =============================================================
+--  STEP 2 — CALCULATE MONTHS SINCE SIGNUP FOR EACH ACTIVITY ROW
+-- =============================================================
+cohort_activity AS (
+    SELECT
+        uc.cohort_month,
+        uc.user_id,
+        uc.plan,
+        ua.activity_month,
+        ua.sessions,
+        ua.features_used,
+        -- Month index: 0 = signup month, 1 = month after, etc.
+        (EXTRACT(YEAR  FROM ua.activity_month) - EXTRACT(YEAR  FROM uc.cohort_month)) * 12
+        + (EXTRACT(MONTH FROM ua.activity_month) - EXTRACT(MONTH FROM uc.cohort_month))
+            AS month_index,
+        -- Active = had at least 1 session
+        CASE WHEN ua.sessions > 0 THEN 1 ELSE 0 END                AS is_active
+    FROM user_cohorts uc
+    JOIN user_activity ua ON uc.user_id = ua.user_id
+),
+
+
+-- =============================================================
+--  STEP 3 — COHORT SIZE (users active in M0)
+-- =============================================================
+cohort_sizes AS (
+    SELECT
+        cohort_month,
+        COUNT(DISTINCT user_id)                                     AS cohort_size
+    FROM cohort_activity
+    WHERE month_index = 0
+    GROUP BY cohort_month
+),
+
+
+-- =============================================================
+--  STEP 4 — RETENTION TABLE
+--  Shows how many users from each cohort were still active
+--  at each month index (M0–M5)
+-- =============================================================
+retention_table AS (
+    SELECT
+        ca.cohort_month,
+        cs.cohort_size,
+        ca.month_index,
+        COUNT(DISTINCT CASE WHEN ca.is_active = 1 THEN ca.user_id END)
+                                                                    AS active_users,
+        ROUND(
+            COUNT(DISTINCT CASE WHEN ca.is_active = 1 THEN ca.user_id END)::NUMERIC
+            / cs.cohort_size * 100, 1
+        )                                                           AS retention_pct
+    FROM cohort_activity ca
+    JOIN cohort_sizes cs ON ca.cohort_month = cs.cohort_month
+    WHERE ca.month_index BETWEEN 0 AND 5
+    GROUP BY ca.cohort_month, cs.cohort_size, ca.month_index
+),
+
+
+-- =============================================================
+--  STEP 5 — CHURN BY COHORT
+--  A user is "churned" if they had activity then went to 0 sessions
+-- =============================================================
+churned_users AS (
+    SELECT DISTINCT
+        ca.cohort_month,
+        ca.user_id
+    FROM cohort_activity ca
+    WHERE ca.is_active = 0
+      AND ca.month_index > 0
+      -- Had been active before
+      AND EXISTS (
+          SELECT 1 FROM cohort_activity ca2
+          WHERE ca2.user_id = ca.user_id
+            AND ca2.is_active = 1
+            AND ca2.month_index < ca.month_index
+      )
+),
+
+churn_by_cohort AS (
+    SELECT
+        cs.cohort_month,
+        cs.cohort_size,
+        COUNT(DISTINCT cu.user_id)                                 AS churned_users,
+        ROUND(
+            COUNT(DISTINCT cu.user_id)::NUMERIC / cs.cohort_size * 100, 1
+        )                                                          AS cohort_churn_pct
+    FROM cohort_sizes cs
+    LEFT JOIN churned_users cu ON cs.cohort_month = cu.cohort_month
+    GROUP BY cs.cohort_month, cs.cohort_size
+),
+
+
+-- =============================================================
+--  STEP 6 — AVG ENGAGEMENT BY COHORT & PLAN
+-- =============================================================
+cohort_engagement AS (
+    SELECT
+        uc.cohort_month,
+        uc.plan,
+        ROUND(AVG(ua.sessions), 1)                                 AS avg_sessions_per_month,
+        ROUND(AVG(ua.features_used), 1)                            AS avg_features_adopted,
+        COUNT(DISTINCT uc.user_id)                                 AS users
+    FROM user_cohorts uc
+    JOIN user_activity ua ON uc.user_id = ua.user_id
+    WHERE ua.sessions > 0
+    GROUP BY uc.cohort_month, uc.plan
+),
+
+
+-- =============================================================
+--  STEP 7 — TIME TO FIRST VALUE (TTFV)
+--  Days between signup and first meaningful product action
+-- =============================================================
+ttfv AS (
+    SELECT
+        uc.cohort_month,
+        uc.plan,
+        COUNT(fv.user_id)                                          AS activated_users,
+        ROUND(AVG(fv.first_value_date - u.signup_date), 1)        AS avg_days_to_first_value,
+        MIN(fv.first_value_date - u.signup_date)                   AS fastest_ttfv_days,
+        MAX(fv.first_value_date - u.signup_date)                   AS slowest_ttfv_days
+    FROM user_cohorts uc
+    JOIN users u ON uc.user_id = u.user_id
+    LEFT JOIN first_value_events fv ON uc.user_id = fv.user_id
+    GROUP BY uc.cohort_month, uc.plan
+)
+
+
+-- =============================================================
+--  FINAL OUTPUTS
+-- =============================================================
+
+-- Retention Table (pivot-friendly: one row per cohort × month)
+SELECT
+    cohort_month,
+    cohort_size,
+    month_index,
+    active_users,
+    retention_pct
+FROM retention_table
+ORDER BY cohort_month, month_index;
+
+-- Run standalone for Churn by Cohort:
+-- SELECT * FROM churn_by_cohort ORDER BY cohort_month;
+
+-- Run standalone for Engagement by Cohort & Plan:
+-- SELECT * FROM cohort_engagement ORDER BY cohort_month, plan;
+
+-- Run standalone for Time to First Value:
+-- SELECT * FROM ttfv ORDER BY cohort_month, plan;
