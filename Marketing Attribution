@@ -1,0 +1,157 @@
+-- =============================================================
+--  MARKETING ATTRIBUTION SCRIPT
+--  Step 1: Audience Pool
+--  Step 2: Campaign Exposure
+--  Step 3: Attribution (Exposed + Converted)
+-- =============================================================
+
+
+-- =============================================================
+--  STEP 1 — AUDIENCE POOL
+--  All users who are eligible to be targeted.
+--  Source: fake inline data representing a CRM/user table.
+-- =============================================================
+
+WITH audience_pool AS (
+    SELECT *
+    FROM (
+        VALUES
+            (1001, 'alice@example.com',   'F', 34, 'New York',      'premium'),
+            (1002, 'bob@example.com',     'M', 28, 'Los Angeles',   'free'),
+            (1003, 'carol@example.com',   'F', 45, 'Chicago',       'premium'),
+            (1004, 'dan@example.com',     'M', 22, 'Houston',       'free'),
+            (1005, 'eva@example.com',     'F', 31, 'Phoenix',       'premium'),
+            (1006, 'frank@example.com',   'M', 52, 'Philadelphia',  'free'),
+            (1007, 'grace@example.com',   'F', 27, 'San Antonio',   'premium'),
+            (1008, 'henry@example.com',   'M', 38, 'San Diego',     'free'),
+            (1009, 'iris@example.com',    'F', 41, 'Dallas',        'premium'),
+            (1010, 'james@example.com',   'M', 29, 'San Jose',      'free')
+    ) AS t(user_id, email, gender, age, city, subscription_tier)
+),
+
+
+-- =============================================================
+--  STEP 2 — CAMPAIGN EXPOSURE
+--  All users who were served an ad / shown a campaign.
+--  Includes channel, campaign name, and impression timestamp.
+-- =============================================================
+
+campaign_exposure AS (
+    SELECT *
+    FROM (
+        VALUES
+            (1001, 'CAMP_SUMMER_2024', 'paid_social',   '2024-06-01 09:15:00'::TIMESTAMP),
+            (1002, 'CAMP_SUMMER_2024', 'display',       '2024-06-02 14:22:00'::TIMESTAMP),
+            (1003, 'CAMP_SUMMER_2024', 'paid_search',   '2024-06-01 11:05:00'::TIMESTAMP),
+            (1005, 'CAMP_SUMMER_2024', 'paid_social',   '2024-06-03 08:44:00'::TIMESTAMP),
+            (1006, 'CAMP_SUMMER_2024', 'email',         '2024-06-01 10:00:00'::TIMESTAMP),
+            (1007, 'CAMP_SUMMER_2024', 'display',       '2024-06-04 16:30:00'::TIMESTAMP),
+            (1009, 'CAMP_SUMMER_2024', 'paid_search',   '2024-06-02 13:18:00'::TIMESTAMP),
+            (1010, 'CAMP_SUMMER_2024', 'email',         '2024-06-05 09:00:00'::TIMESTAMP)
+    ) AS t(user_id, campaign_id, channel, impression_ts)
+),
+
+
+-- =============================================================
+--  STEP 3 — CONVERSIONS
+--  Users who completed a desired action (purchase, sign-up, etc.)
+--  within the attribution window after exposure.
+-- =============================================================
+
+conversions AS (
+    SELECT *
+    FROM (
+        VALUES
+            (1001, 'CAMP_SUMMER_2024', 'purchase',  49.99,  '2024-06-03 18:05:00'::TIMESTAMP),
+            (1003, 'CAMP_SUMMER_2024', 'purchase',  89.00,  '2024-06-05 12:30:00'::TIMESTAMP),
+            (1005, 'CAMP_SUMMER_2024', 'sign_up',    0.00,  '2024-06-04 09:10:00'::TIMESTAMP),
+            (1007, 'CAMP_SUMMER_2024', 'purchase',  34.50,  '2024-06-07 20:45:00'::TIMESTAMP),
+            (1009, 'CAMP_SUMMER_2024', 'purchase', 120.00,  '2024-06-06 15:20:00'::TIMESTAMP),
+            -- User 1004 converted but was NOT in the exposed group (organic)
+            (1004, 'CAMP_SUMMER_2024', 'purchase',  59.99,  '2024-06-04 11:00:00'::TIMESTAMP)
+    ) AS t(user_id, campaign_id, conversion_type, revenue, conversion_ts)
+),
+
+
+-- =============================================================
+--  FINAL — ATTRIBUTION OUTPUT
+--  Joins all three layers together.
+--  Result: one row per user showing exposure + conversion status.
+--
+--  Logic:
+--    - LEFT JOIN exposure → keeps all audience members
+--    - LEFT JOIN conversions → keeps all exposed users
+--    - CASE flags whether conversion was attributed (exposed AND converted)
+--      vs. organic (converted but NOT exposed)
+-- =============================================================
+
+attribution AS (
+    SELECT
+        ap.user_id,
+        ap.email,
+        ap.gender,
+        ap.age,
+        ap.city,
+        ap.subscription_tier,
+
+        -- Exposure fields (NULL if user was not exposed)
+        ce.campaign_id,
+        ce.channel                                          AS exposure_channel,
+        ce.impression_ts,
+
+        -- Conversion fields (NULL if user did not convert)
+        cv.conversion_type,
+        cv.revenue,
+        cv.conversion_ts,
+
+        -- Attribution classification
+        CASE
+            WHEN ce.user_id IS NOT NULL AND cv.user_id IS NOT NULL
+                THEN 'attributed'           -- Exposed AND converted  ✓
+            WHEN ce.user_id IS NOT NULL AND cv.user_id IS NULL
+                THEN 'exposed_no_convert'   -- Exposed but did NOT convert
+            WHEN ce.user_id IS NULL AND cv.user_id IS NOT NULL
+                THEN 'organic_convert'      -- Converted without exposure
+            ELSE 'no_exposure_no_convert'   -- In audience, neither exposed nor converted
+        END                                                 AS attribution_status,
+
+        -- Days from impression to conversion (NULL if either is missing)
+        CASE
+            WHEN ce.impression_ts IS NOT NULL AND cv.conversion_ts IS NOT NULL
+                THEN EXTRACT(
+                         EPOCH FROM (cv.conversion_ts - ce.impression_ts)
+                     ) / 86400.0
+            ELSE NULL
+        END                                                 AS days_to_convert
+
+    FROM audience_pool        ap
+    LEFT JOIN campaign_exposure ce ON ap.user_id = ce.user_id
+    LEFT JOIN conversions       cv ON ap.user_id = cv.user_id
+                                  AND ce.campaign_id = cv.campaign_id  -- same campaign
+)
+
+
+-- =============================================================
+--  OUTPUT
+-- =============================================================
+
+SELECT
+    user_id,
+    email,
+    subscription_tier,
+    exposure_channel,
+    impression_ts,
+    conversion_type,
+    revenue,
+    conversion_ts,
+    attribution_status,
+    ROUND(days_to_convert::NUMERIC, 1)  AS days_to_convert
+FROM attribution
+ORDER BY
+    CASE attribution_status
+        WHEN 'attributed'            THEN 1
+        WHEN 'exposed_no_convert'    THEN 2
+        WHEN 'organic_convert'       THEN 3
+        ELSE 4
+    END,
+    user_id;
